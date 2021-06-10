@@ -1,0 +1,153 @@
+#include <time.h>
+#include "ICM_20948.h" //Click here to get the library: http://librarymanager/All#SparkFun_ICM_20948_IMU
+
+const int cal_button_pin=3;
+const int microphoneInPin = A0; // Analog input pin that the MMG is connected to
+const int buzzer_pin=2;
+float calv;
+float microphone_value = 0; // Analog value of MMG
+float gap = 10; //delay to calculate derivative (slope)
+float slope = 0;
+float past = 0; //to calculate slope
+float threshold = 6.5; //threshold for MMG's derivative (in case someone forgets to calibrate)
+float cal_time = 10000; //10 seconds calibation time for the MMG's threshold
+bool flag = 0;
+float temporary = 0;
+float v_gyro = 0; //magnitude of angular acceleration of IMU
+float v_thresh = 15; //threshold acceleration for IMU
+bool gflag = 0;
+float start2 = 0;
+const int output_v = 4; //pin where the output is sent to flippers
+const int switch_pin = 5; //pin where the switch is inputted
+
+float magnitude(ICM_20948_I2C *sensor); //calculates v_gyro
+float fslope(); //calculates derivative of MMG analog signal
+float calibration(); //calibrates MMG threshold for the specific individual
+
+#define WIRE_PORT Wire //declarations for correct functioning of IMU
+
+#define AD0_VAL 1
+
+ICM_20948_I2C myICM;
+
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(9600); //starts the serial
+  pinMode(output_v, OUTPUT);
+  pinMode(cal_button_pin,INPUT);
+  pinMode(buzzer_pin,OUTPUT);
+  pinMode(switch_pin,INPUT);
+  WIRE_PORT.begin();
+  WIRE_PORT.setClock(400000); //begins and configures the Wire of IMU
+  bool initialized = false;
+  while (!initialized) //doesn't exit until the IMU is working
+  {
+    myICM.begin(WIRE_PORT, AD0_VAL);
+    if (myICM.status != ICM_20948_Stat_Ok) //checks that IMU is started and works properly
+    {
+      Serial.println("Trying again...");
+      delay(500);
+    }
+    else
+    {
+      initialized = true;
+    }
+  }
+  microphone_value = analogRead(microphoneInPin); //reads the first value of MMG
+}
+
+ 
+
+void loop() {
+if(digitalRead(switch_pin)==HIGH) //Only works if the switch is on
+{
+  if(digitalRead(cal_button_pin)==HIGH)//starts calibrating when button pressed
+  {
+  calv = calibration();
+  threshold = 1.25 + calv; //sets the threshold for MMG with the calibration function
+  Serial.println("calibration finnished");
+  digitalWrite(buzzer_pin,HIGH); //notifies user with beep that calibration is finished
+  delay(250);
+  digitalWrite(buzzer_pin,LOW);  
+  }
+  if (myICM.dataReady()) //checks whether the IMU has data available
+  {
+
+    myICM.getAGMT(); //gets that data
+
+    v_gyro = magnitude(&myICM); //calculates the magnitude of angular acceleration
+
+    //delay(30); //no need for delay since slope is done with a delay already
+
+  }
+  slope = fslope(); //gets the slope of the Analog signl from the MMG
+
+  if (v_gyro > v_thresh)
+  {
+    gflag = 1;
+    start2 = millis();
+  }
+  if (millis() - start2 > 50) //this whole step is to avoid triggering when the head is moving due to the fluctuating (sinusoid like) pattern of the analog IMU signal. It is activated for a whole period.
+  {
+    gflag = 0;
+  }
+  if (slope > threshold || slope < -threshold) //only when |slope|>1.2*threshold is when we have an eyebrow movement; 1.2 was decided arbitrarily from multiple attempts.
+  {
+    if (!gflag) //checks that the head is not moving
+    {
+      Serial.println(1); //if both conditions are met, a serial 1 can be sent
+      digitalWrite(output_v,HIGH); //Sends HIGH which corresponds to no output to the flippers
+    }
+  }
+  else {
+  Serial.println(0); //if either is not met, a 0 is sent.
+  digitalWrite(output_v,LOW); //Sends LOW which corresponds to no output to the flippers
+  }
+}
+}
+
+float fslope() //function that calculates MMG slope at a given point
+{
+  microphone_value = analogRead(microphoneInPin); //reads current value
+  float before = microphone_value; //stores thata value
+  delay(gap); //waits 10 ms
+  microphone_value = analogRead(microphoneInPin); //gets new value
+  float after = microphone_value; //stores it
+  float derv;
+  derv = (after - before) / gap; //calculates slope between those two points and we use it as the derivative approximation.
+  return derv;
+}
+
+float calibration()//function that calibrates MMG's threshold
+{
+  float average = 0;
+  float vmax[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; //taking the 10 highest maximums was arbitrary : compromise between efficiency and accuracy;  They are stored as an array
+  float start = millis(); //gets the current time with Arduino's millis() function
+  while (-start + millis() < 5000) //It calibrates for 5 seconds which is cal_time. This value was determined arbitrarily as a compromise between accuracy and comfort of the user.
+  {
+    flag = 0;
+    temporary = fslope(); //takes the current slope
+    for (int i = 0; i < 10 && !flag; i++) //checks if slope is higher than previous values one by one and stops when either end is reached or a smaller value is found because it replaces it
+    {
+      if (temporary > vmax[i])
+      {
+        vmax[i] = temporary;
+        flag = 1;
+      }
+    }
+  }
+  for (int i = 0; i < 10; i++) //scans through maximum value array
+  {
+    average = average + vmax[i]; //gets the sum of all maximums
+  }
+  average = average / 10; //gives average of the maximums which is used as threshold
+  return average; //NOTE : The maximum threshold wasn't used because there is already the 1.2 factor and if there was a single anomaly during calibration (for example children moves or talks unintentionally), it would make the game unplayable.
+}
+
+float magnitude(ICM_20948_I2C *sensor) //gives you the magnitude of the angular acceleration vector
+{
+  float magn;
+  magn = sqrt((sensor->gyrX()) * (sensor->gyrX()) + (sensor->gyrY()) * (sensor->gyrY()) + (sensor->gyrZ()) * (sensor->gyrZ())); //||v|| = sqrt(x^2+y^2+z^2) is used here to calculate the magnitude with v(x,y,z);
+  return magn; //returns that magnitude
+}
+
